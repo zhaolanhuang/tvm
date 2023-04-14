@@ -32,7 +32,7 @@
 namespace tvm {
 namespace relay {
 
-inline Type GradRetType(const Function& f) {
+inline Type GradRetType(const Function& f, const Array<String>& requires_grad={}) {
   // if type annotations are provided, we will construct a ret type;
   // otherwise, leave it to be inferred
   if (!f->ret_type.defined()) {
@@ -43,7 +43,13 @@ inline Type GradRetType(const Function& f) {
     if (!p->type_annotation.defined()) {
       return Type();
     }
-    vt.push_back(p->type_annotation);
+    for (const auto& rg : requires_grad) {
+      if(rg == p->name_hint()) {
+        vt.push_back(p->type_annotation);
+        break;
+      }
+    }  
+    
   }
 
   return TupleType({f->ret_type, TupleType(vt)});

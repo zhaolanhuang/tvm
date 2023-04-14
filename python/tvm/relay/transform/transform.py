@@ -842,7 +842,7 @@ def gradient(expr, mod=None, mode="higher_order"):
     raise Exception("unknown mode")
 
 
-def FirstOrderGradient():
+def FirstOrderGradient(requires_grad=None):
     """
     Transforms all global functions in the module to return the original result, paired with the
     gradients of the inputs. This pass transforms each global function independently and does not
@@ -854,7 +854,7 @@ def FirstOrderGradient():
     ret : tvm.transform.Pass
         The registered FirstOrderGradient pass.
     """
-    return _ffi_api.FirstOrderGradient()
+    return _ffi_api.FirstOrderGradient(requires_grad)
 
 
 def Defunctionalization(func, mod):

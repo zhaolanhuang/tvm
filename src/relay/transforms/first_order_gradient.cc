@@ -87,10 +87,12 @@ using ADValue = std::shared_ptr<ADValueNode>;
 struct ADTensor : ADValueNode {
   Expr forward;
   mutable Expr reverse;  // must be a variable to avoid duplication
-  ADTensor(LetList* ll, const Expr& forward, DiagnosticContext diag_ctx)
+  bool requires_grad;
+  ADTensor(LetList* ll, const Expr& forward, DiagnosticContext diag_ctx, bool requires_grad = true)
       : forward(ll->Push(forward)),
         reverse(ll->Push(
-            MultiFactoryLike(this->forward, forward->checked_type(), Zeros, ZerosLike, diag_ctx))) {
+            MultiFactoryLike(this->forward, forward->checked_type(), Zeros, ZerosLike, diag_ctx))),
+            requires_grad(requires_grad) {
     this->forward->checked_type_ = forward->checked_type();
   }
 };
@@ -258,8 +260,8 @@ struct FirstOrderReverseAD : ExprFunctor<ADValue(const Expr&)> {
 
 namespace transform {
 
-Pass FirstOrderGradient() {
-  runtime::TypedPackedFunc<IRModule(IRModule, PassContext)> f = [](IRModule mod, PassContext ctx) {
+Pass FirstOrderGradient(const Array<String>& requires_grad) {
+  runtime::TypedPackedFunc<IRModule(IRModule, PassContext)> f = [requires_grad](IRModule mod, PassContext ctx) {
     CheckFeature(
         mod, FeatureSet({fVar, fConstant, fTuple, fTupleGetItem, fFunction, fOp, fCall, fGraph}));
     IRModule ad_mod = GetRef<IRModule>(mod.CopyOnWrite());
@@ -286,7 +288,14 @@ Pass FirstOrderGradient() {
         ADValue rev = reverse_ad(pr.second);
         std::vector<ADValue> args;
         for (const auto& p : func->params) {
-          args.push_back(std::make_shared<ADTensor>(ll, p, diag_ctx));
+          bool b_requires_grad = false;
+          for (const auto& rg : requires_grad) {
+            if(rg == p->name_hint()) {
+              b_requires_grad = true;
+              break;
+            }  
+          }
+          args.push_back(std::make_shared<ADTensor>(ll, p, diag_ctx, b_requires_grad));
         }
         Call placeholder = Call(GetRef<Function>(func), {});
         placeholder->checked_type_ = func->checked_type().as<FuncTypeNode>()->ret_type;
@@ -301,14 +310,15 @@ Pass FirstOrderGradient() {
           }
           std::vector<Expr> grads;
           for (const auto& a : args) {
-            grads.push_back(a->get<ADTensor>().reverse);
+            if(a->get<ADTensor>().requires_grad)
+              grads.push_back(a->get<ADTensor>().reverse);
           }
           return Tuple(grads);
         });
         return Pair(res.forward, grad_tuple);
       });
       ad_mod->Update(pr.first, WithFields(GetRef<Function>(func), func->params, body,
-                                          GradRetType(GetRef<Function>(func)),
+                                          GradRetType(GetRef<Function>(func), requires_grad),
                                           /* erase type params */ Array<TypeVar>()));
     }
 
