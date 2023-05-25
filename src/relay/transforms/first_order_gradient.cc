@@ -271,7 +271,7 @@ Pass FirstOrderGradient(const Array<String>& requires_grad) {
       LOG(WARNING) << "IRModule contains multiple global functions: first-order AD will transform "
                       "them indepedently!";
     }
-
+    Array<Var> new_params;
     for (const auto& pr : mod->functions) {
       const FunctionNode* func = pr.second.as<FunctionNode>();
       if (!func) {
@@ -302,8 +302,12 @@ Pass FirstOrderGradient(const Array<String>& requires_grad) {
         auto grad_call = rev->get<ADFunction>().func(args, placeholder);
         auto& res = grad_call->get<ADTensor>();
         Expr grad_tuple = LetList::With([&](LetList* ll) {
-          res.reverse =
-              MultiFactoryLike(res.forward, res.forward->checked_type(), Ones, OnesLike, diag_ctx);
+          // res.reverse =
+          //     MultiFactoryLike(res.forward, res.forward->checked_type(), Ones, OnesLike, diag_ctx);
+          auto ret_grad = Var("ret_grad", res.forward->checked_type());
+          res.reverse = ret_grad;
+          new_params = func->params;
+          new_params.push_back(ret_grad);
           for (auto it = reverse_ad.backprop_actions.rbegin();
                it != reverse_ad.backprop_actions.rend(); ++it) {
             (*it)(ll);
@@ -317,7 +321,7 @@ Pass FirstOrderGradient(const Array<String>& requires_grad) {
         });
         return Pair(res.forward, grad_tuple);
       });
-      ad_mod->Update(pr.first, WithFields(GetRef<Function>(func), func->params, body,
+      ad_mod->Update(pr.first, WithFields(GetRef<Function>(func), /*func->params*/ new_params, body,
                                           GradRetType(GetRef<Function>(func), requires_grad),
                                           /* erase type params */ Array<TypeVar>()));
     }
