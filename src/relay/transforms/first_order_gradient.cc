@@ -283,6 +283,9 @@ Pass FirstOrderGradient(const Array<String>& requires_grad) {
         diag_ctx.EmitFatal(Diagnostic::Error(pr.second->span)
                            << "first-order AD does not support polymorphism yet.");
       }
+      Array<String> output_names;
+      //TODO: should generalize to multi-output(polymorphism) func.
+      output_names.push_back("output0");
       Expr body = LetList::With([&](LetList* ll) {
         FirstOrderReverseAD reverse_ad(ll, diag_ctx);
         ADValue rev = reverse_ad(pr.second);
@@ -292,6 +295,7 @@ Pass FirstOrderGradient(const Array<String>& requires_grad) {
           for (const auto& rg : requires_grad) {
             if(rg == p->name_hint()) {
               b_requires_grad = true;
+              output_names.push_back(rg + "_grad");
               break;
             }  
           }
@@ -314,16 +318,21 @@ Pass FirstOrderGradient(const Array<String>& requires_grad) {
           }
           std::vector<Expr> grads;
           for (const auto& a : args) {
-            if(a->get<ADTensor>().requires_grad)
+            if(a->get<ADTensor>().requires_grad) {
               grads.push_back(a->get<ADTensor>().reverse);
+            }
           }
           return Tuple(grads);
         });
         return Pair(res.forward, grad_tuple);
       });
+      Map<String, ObjectRef> attrs;
+      attrs.Set("output_tensor_names", output_names);
+      DictAttrs dict_attrs(attrs);
       ad_mod->Update(pr.first, WithFields(GetRef<Function>(func), /*func->params*/ new_params, body,
                                           GradRetType(GetRef<Function>(func), requires_grad),
-                                          /* erase type params */ Array<TypeVar>()));
+                                          /* erase type params */ Array<TypeVar>(),
+                                          dict_attrs));
     }
 
     return ad_mod;
