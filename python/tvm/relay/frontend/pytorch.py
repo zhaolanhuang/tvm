@@ -3997,7 +3997,8 @@ class PyTorchOpConverter:
         attn_weight = _op.squeeze(attn_weight, axis=[])
 
         attn_weight = _op.multiply(attn_weight, scale_factor)
-        attn_weight = _op.add(attn_weight, attn_bias)
+        if is_causal or (attn_mask is not None):
+            attn_weight = _op.add(attn_weight, attn_bias)
         attn_weight = _op.nn.softmax(attn_weight)
         attn_weight = _op.nn.dropout(attn_weight, rate=dropout_p)
 
