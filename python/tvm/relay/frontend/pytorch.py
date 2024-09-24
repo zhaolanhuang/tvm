@@ -4985,6 +4985,8 @@ def _rename_outputs(
         # if use_parser_friendly_name is True: e.g. prim::Constant_0 -> prim__Constant_0
         if use_parser_friendly_name:
             node_src_name = re.sub(r":|\.", "_", node_src_name)
+            if node_src_name.startswith(tuple(str(i) for i in range(0,10))):
+                node_src_name = "_" + node_src_name
         source_map[node] = node_src_name
 
 
