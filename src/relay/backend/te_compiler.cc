@@ -393,6 +393,7 @@ class TECompilerImpl : public TECompilerNode {
     ICHECK(!value->cached_func.defined());
     value->cached_func =
         PrimFuncFor(key->source_func, key->target, global_var_supply, constant_name_supply_);
+    VLOG(1) << "Lowered Name:" << value->cached_func->prim_fn_var->name_hint << std::endl;
 
     if (value->cached_func->prim_func.defined()) {
       VLOG(1) << "Lowering PrimFunc";

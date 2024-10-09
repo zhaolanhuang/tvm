@@ -495,6 +495,14 @@ class ScheduleBuilder : public ExprVisitor {
     // TODO(mbs): This should be the definitive global by which the PrimFunc is known and
     // no other GlobalVar ctors should appear inside the lowering machinery.
     auto prim_fn_var = global_var_supply->FreshGlobal(lower_te_compute.candidate_name_);
+
+    //Keep Global Symbol in Lowered PrimFunc if defined
+    Optional<String> opt_global_symbol = 
+          relay_func->GetAttr<String>(tvm::attr::kGlobalSymbol);
+    if (opt_global_symbol.defined()) {
+        VLOG(1) << "Find defined Global Symbol: " << opt_global_symbol.value() << std::endl;
+        prim_fn_var = global_var_supply->FreshGlobal(opt_global_symbol.value());
+    } 
     prim_fn_var->checked_type_ = relay_func->checked_type();
 
     // Fusion over tupled results may leave identity relationships

@@ -154,11 +154,20 @@ class AnnotateUsedMemoryMutator : public transform::DeviceAwareExprMutator {
 
         // Calculate size of live tensors and store to allow annotation when the function
         // gets visited.
+        VLOG(0) << "AnnotatedUseMemory CallSite '" << let_var-> name_hint() << "'";
+
+        VLOG(0) << "AnnotatedUseMemory Op '" << call_op -> name_hint() << "' type:" << PrettyPrint(call_op->checked_type());
+
         uint64_t used_memory = 0;
         for (const auto& var : live_tensors) {
+          VLOG(0) << "AnnotatedUseMemory Live Var '" << var -> name_hint() << "' type:" << PrettyPrint(var->checked_type());
           Type type = var->checked_type();
           ICHECK(type.defined()) << "InferType pass should be run before AnnotateUsedMemory.";
           ICHECK(!IsDynamic(type)) << "AnnotateUsedMemory does not support dynamic shapes.";
+          // if(type->IsInstance<FuncTypeNode>()) {
+          //   VLOG(0) << "Function Type Node, Skip...";
+          //   continue;
+          // }
           used_memory += CalculateRelayExprSizeBytes(type);
         }
         IntImm annotation(DataType::UInt(64), used_memory);
