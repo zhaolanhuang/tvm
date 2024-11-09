@@ -413,6 +413,16 @@ def get():
     """
     return _backend._TECompilerGlobal()
 
+def current():
+    """Get the current TE Compiler.
+
+    Returns
+    -------
+    engine : tvm.relay.backend.TECompiler
+        The TE Compiler.
+    """
+    return _backend._TECompilerCurrent()
+
 
 def lower_to_primfunc(relay_func, target):
     """Lower Relay Function to TIR PrimFunc.

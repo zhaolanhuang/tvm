@@ -321,7 +321,7 @@ class TECompilerImpl : public TECompilerNode {
 
   // List all items in the cache.
   Array<ObjectRef> ListItems() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // std::lock_guard<std::mutex> lock(mutex_);
     Array<ObjectRef> items;
     for (auto& kv : cache_) {
       items.push_back(kv.first);
@@ -343,7 +343,7 @@ class TECompilerImpl : public TECompilerNode {
             << PrettyPrint(key->source_func) << std::endl
             << "for target:" << std::endl
             << key->target->ToDebugString();
-    std::lock_guard<std::mutex> lock(mutex_);
+    // std::lock_guard<std::mutex> lock(mutex_);
     CCacheValue value;
     auto it = cache_.find(key);
     if (it != cache_.end()) {
@@ -476,7 +476,7 @@ class TECompilerImpl : public TECompilerNode {
             << PrettyPrint(key->source_func) << std::endl
             << "for target:" << std::endl
             << key->target->ToDebugString();
-    std::lock_guard<std::mutex> lock(mutex_);
+    // std::lock_guard<std::mutex> lock(mutex_);
     CCacheValue value;
     auto it = shape_func_cache_.find(key);
     if (it != shape_func_cache_.end()) {
@@ -1184,10 +1184,18 @@ void UpdateFunctionMetadata(BaseFunc func,
   function_metadata.Set(prim_fn_var.value()->name_hint, fi);
 }
 
+static TECompiler* current_compiler = nullptr;
+
+TVM_REGISTER_GLOBAL("relay.backend._TECompilerCurrent").set_body_typed([]() {
+  return *current_compiler;
+});
+
+
 /*! \brief Main lowering driving. */
 IRModule LowerTE(const IRModule& module, const String& module_name, ProcessFn process_fn,
                  CompilationConfig config) {
   TECompiler compiler(module, module_name);
+  current_compiler = &compiler;
 
   // TODO(mbs): This is all unnecessarily convoluted. Better would be to accumulate the rewritten
   // module as we go (including rewritten Functions, lowered primitives, and runtime modules

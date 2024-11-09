@@ -354,7 +354,6 @@ def extern(
             f"Function '{fcompute.__name__}' should return PrimExpr or Stmt, but it returned "
             f"'{type(body)}'"
         )
-
     op = _ffi_api.ExternOp(name, tag, attrs, inputs, input_placeholders, output_placeholders, body)
     res = [op.output(i) for i in range(len(output_placeholders))]
     return res[0] if len(res) == 1 else res
@@ -419,7 +418,6 @@ def extern_primfunc(input_tensors: List[_tensor.Tensor], primfunc: tvm.tir.PrimF
         iobuf = inplace.pop()
         input_buffers.remove(iobuf)
         outputs = [iobuf]
-
     assert len(input_buffers) == len(input_tensors), (
         "The number of provided input input_tensors does not match the number of ",
         "input buffers in the primfunc",
