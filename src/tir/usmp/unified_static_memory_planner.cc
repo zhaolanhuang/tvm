@@ -66,6 +66,16 @@ IRModule PlanMemory(const IRModule& mod, String algo, bool use_workspace_io,
   BufferInfoAnalysis buffer_info_analysis = ExtractBufferInfo(main_func, module);
   Array<BufferInfo> buffer_info_arr =
       ConvertToArrayOfBufferInfo(buffer_info_analysis->buffer_info_stmts);
+  
+  for (const auto& buf_info : buffer_info_arr) {
+      VLOG(2) << "BufferInfo:" << buf_info;
+      for (const auto& conflict_buf_info_obj : buf_info->conflicts) {
+        const BufferInfoNode* conflict_buf_info = conflict_buf_info_obj.as<BufferInfoNode>();
+        VLOG(2) << "Conflicts with:" << conflict_buf_info->name_hint;
+      }
+  }
+
+
   decltype(algorithms)::mapped_type algorithm;
   if (opt_custom_algo) {
     String algo_func_name = "tir.usmp.algo." + opt_custom_algo.value();
@@ -81,6 +91,8 @@ IRModule PlanMemory(const IRModule& mod, String algo, bool use_workspace_io,
   }
   Map<BufferInfo, PoolAllocation> buffer_info_pool_allocations =
       algorithm(buffer_info_arr, buffer_info_analysis->memory_pressure);
+
+  VLOG(2) << "Memory Pressure: " << buffer_info_analysis->memory_pressure;
 
   Map<Stmt, PoolAllocation> stmt_pool_allocations = AssignStmtPoolAllocations(
       buffer_info_analysis->buffer_info_stmts, buffer_info_pool_allocations);

@@ -78,7 +78,13 @@ class RelayToTIRVisitor : public MixedModeMutator {
   }
 
   IRModule Mutate() {
-    GlobalVar main_global_var = ir_module_->GetGlobalVar("main");
+    GlobalVar main_global_var;
+    if (ir_module_->ContainGlobalVar("main")) {
+      main_global_var = ir_module_->GetGlobalVar("main");
+    } else {
+      main_global_var = ir_module_->GetGlobalVars()[0];
+    }
+    
     Function main = Downcast<Function>(ir_module_->Lookup(main_global_var));
     Function mutated_main = WithFields(main, main->params, VisitExpr(main->body));
 
@@ -317,6 +323,173 @@ class RelayToTIRVisitor : public MixedModeMutator {
                             buffer_creator.GetBufferMap(), call_ext_args, context_buffer_var,
                             context_buffer_size, context_buffer_bits);
   }
+
+  void EmitConv2D_(const GlobalVar& global_var, const Expr& expr) {
+    const CallNode* clip_call = nullptr;
+    const CallNode* requantize_call = nullptr;
+    const CallNode* bias_add_call = nullptr;
+    const CallNode* conv2d_call = nullptr;
+    const CallNode* final_call = expr.as<CallNode>();
+    const OpNode* final_op = final_call->op.as<OpNode>();
+
+    if (final_op->name == "nn.bias_add") {
+      bias_add_call = final_call;
+      conv2d_call = bias_add_call->args[0].as<CallNode>();
+    } else {
+      conv2d_call = final_call;
+    }
+    int32_t dtype_bits = conv2d_call->args[0]->type_as<TensorTypeNode>()->dtype.bits();
+
+    // Determine bitwidth of buffers based on input dtype
+    int32_t input_bits = 8;
+    int32_t filter_bits = 8;
+    int32_t bias_bits = 32;
+    int32_t output_bits = 8;
+    int32_t context_buffer_bits = 8;
+    bool is_int16 = false;
+    if (dtype_bits == 16) {
+      is_int16 = true;
+      input_bits = 16;
+      bias_bits = 64;
+      output_bits = 16;
+      context_buffer_bits = 16;
+    }
+
+    // TIR variables are created in the order they appear in the Relay partitioned function
+    // %1 = qnn.conv2d(%input, %weight_const_0, input_zero_point_scalar,
+    //                 %cmsisnn_multiplier_const_1, %input_scale_scalar, %weight_scale_const_2)
+    // %2 = nn.bias_add(%1, %bias_const_3, axis=3)
+    // %3 = qnn.requantize(%2, %input_scale_const_4, %cmsisnn_shift_const_5,
+    //                     %output_scale_scalar, %output_zero_point_scalar)
+    // clip(%3, a_min=%min_scalar, a_max=%max_scalar)
+    // Position of scales in the global function for Conv2D
+    const int filter_scale_pos = 3;
+    const int input_scale_pos = bias_add_call ? 5 : 4;
+    BufferCreator buffer_creator;
+    tir::Var input = buffer_creator.CreateBufferVar("input", DataType::Handle(input_bits));
+    tir::Var filter = buffer_creator.CreateBufferVar("filter", DataType::Handle(filter_bits));
+    tir::Var multiplier = buffer_creator.CreateBufferVar("multiplier", DataType::Handle(32));
+    if (bias_add_call) {
+      buffer_creator.CreateBufferVar("bias", DataType::Handle(bias_bits));
+    }
+    tir::Var shift = buffer_creator.CreateBufferVar("shift", DataType::Handle(32));
+    tir::Var output = buffer_creator.CreateBufferVar("output", DataType::Handle(output_bits));
+
+    // Relay function contains input_scale and filter_scale as function parameters at the following
+    // locations in the global partitioned function for Conv2D
+    skip_call_args_.insert(filter_scale_pos);
+    skip_call_args_.insert(input_scale_pos);
+
+    // Individual arguments to the structs arguments of the CMSIS-NN API are filled into call_extern
+    // https://github.com/ARM-software/CMSIS_5/blob/def6f800f95661eb3451d317f7d0dde504f6020d/CMSIS/NN/Source/ConvolutionFunctions/arm_convolve_wrapper_s8.c#L50
+
+    // prepare cmsis_nn_conv_params
+    const Conv2DAttrs* conv2d_attrs = conv2d_call->attrs.as<Conv2DAttrs>();
+    // int32_t input_offset = -GetScalarFromConstant<int32_t>(conv2d_call->args[2]);
+    // int32_t output_offset = GetScalarFromConstant<int32_t>(requantize_call->args[4]);
+
+    int32_t input_offset = 0;
+    int32_t output_offset = 0;
+    int32_t stride_w = qnn::get_const_int(conv2d_attrs->strides[1]);
+    int32_t stride_h = qnn::get_const_int(conv2d_attrs->strides[0]);
+    int32_t padding_w = qnn::get_const_int(conv2d_attrs->padding[1]);
+    int32_t padding_h = qnn::get_const_int(conv2d_attrs->padding[0]);
+    int32_t dilation_w = qnn::get_const_int(conv2d_attrs->dilation[1]);
+    int32_t dilation_h = qnn::get_const_int(conv2d_attrs->dilation[0]);
+    int32_t out_channels = qnn::get_const_int(conv2d_attrs->channels);
+    std::string kernel_layout = conv2d_attrs->kernel_layout.c_str();
+    const auto [clip_min, clip_max] =
+        clip_call ? GetClipMinMax(GetRef<Call>(clip_call)) : GetIntMinMax(dtype_bits);
+
+    tvm::Array<PrimExpr> scalar_args = {ToArg(input_offset), ToArg(output_offset), ToArg(stride_w),
+                                        ToArg(stride_h),     ToArg(padding_w),     ToArg(padding_h),
+                                        ToArg(dilation_w),   ToArg(dilation_h),    ToArg(clip_min),
+                                        ToArg(clip_max)};
+
+    // CMSIS-NN data structure "cmsis_nn_dims" for ifm expects input layout as NHWC
+    // This is the same layout we expect in Relay
+    Array<PrimExpr> input_shape = conv2d_call->args[0]->type_as<TensorTypeNode>()->shape;
+    int32_t input_n = qnn::get_const_int(input_shape[0]);
+    int32_t input_h = qnn::get_const_int(input_shape[1]);
+    int32_t input_c = qnn::get_const_int(input_shape[3]);
+
+    // CMSIS-NN data structure "cmsis_nn_dims" for weights expects following layouts
+    // OHWI for Conv2D and IHWO for Depthwise convolutions
+    Array<PrimExpr> filter_shape = conv2d_call->args[1]->type_as<TensorTypeNode>()->shape;
+
+    Array<PrimExpr> bias_shape{1, 1, 1, out_channels};
+
+    Array<PrimExpr> output_shape = conv2d_call->type_as<TensorTypeNode>()->shape;
+    int32_t output_h = qnn::get_const_int(output_shape[1]);
+    int32_t output_w = qnn::get_const_int(output_shape[2]);
+    int32_t output_c = qnn::get_const_int(output_shape[3]);
+
+    int32_t depth_multiplier = -1;
+    if (IsCMSISNNDepthwise(conv2d_attrs, input_shape, filter_shape)) {
+      // Refer to TVM frontend to know how depth multiplier and out_channels are related
+      // https://github.com/apache/tvm/blob/6ed3ab3e33f8eafa4acaf53b7a671831de7587e9/python/tvm/relay/frontend/tflite.py#L2129
+      int kernel_pos_i = kernel_layout.find("I");
+      int kernel_pos_o = kernel_layout.find("O");
+      int kernel_pos_dm = input_c == 1 ? kernel_pos_o : kernel_pos_i;
+      depth_multiplier = qnn::get_const_int(filter_shape[kernel_pos_dm]);
+    }
+    scalar_args.push_back(ToArg(depth_multiplier));
+
+    // original filter_layout for depthwise is HWOI
+    std::string cmsisnn_api = is_int16 ? "arm_convolve_wrapper_s16" : "arm_convolve_wrapper_s8";
+    bool is_depthwise = depth_multiplier != -1;
+    if (is_depthwise) {
+      cmsisnn_api = is_int16 ? "arm_depthwise_conv_wrapper_s16" : "arm_depthwise_conv_wrapper_s8";
+      int filter_pos_h = kernel_layout.find("H");
+      int filter_pos_w = kernel_layout.find("W");
+      Array<PrimExpr> depthwise_filter_shape{1, filter_shape[filter_pos_h],
+                                             filter_shape[filter_pos_w], out_channels};
+      filter_shape = depthwise_filter_shape;
+    }
+    int32_t filter_h = qnn::get_const_int(filter_shape[1]);
+    int32_t filter_w = qnn::get_const_int(filter_shape[2]);
+
+    tvm::Array<PrimExpr> call_ext_args = {tir::StringImm(cmsisnn_api), input, filter, multiplier};
+    if (bias_add_call) {
+      tir::Var bias = buffer_creator.GetBufferVar("bias");
+      call_ext_args.push_back(bias);
+    }
+    call_ext_args.push_back(shift);
+    call_ext_args.push_back(output);
+
+    PrimExpr context_buffer_var = tir::StringImm("NULL");
+    Target target = CreateTarget(transform::PassContext::Current());
+    size_t context_buffer_size;
+    if (is_depthwise) {
+      context_buffer_size =
+          DepthwiseConv2dBufferSize(is_int16, target, input_n, input_c, output_c, filter_w,
+                                    filter_h, dilation_w, dilation_h, depth_multiplier);
+    } else {
+      context_buffer_size = Conv2dBufferSize(is_int16, target, padding_w, padding_h, input_n,
+                                             input_h, input_c, output_h, output_w, stride_w,
+                                             stride_h, dilation_w, dilation_h, filter_w, filter_h);
+    }
+
+    if (context_buffer_size) {
+      String context_buffer_name = "context_buffer_" + std::to_string(context_buffer_id_++);
+      context_buffer_var =
+          tir::Var(context_buffer_name,
+                   PointerType(PrimType(DataType::Int(context_buffer_bits)), "global.workspace"));
+    }
+    tvm::Array<PrimExpr> context_buffer_args = {context_buffer_var, ToArg(context_buffer_size)};
+
+    scalar_args = tvm::runtime::Concat(context_buffer_args, scalar_args);
+    scalar_args = tvm::runtime::Concat(scalar_args, input_shape);
+    scalar_args = tvm::runtime::Concat(scalar_args, filter_shape);
+    scalar_args = tvm::runtime::Concat(scalar_args, bias_shape);
+    scalar_args = tvm::runtime::Concat(scalar_args, output_shape);
+    call_ext_args = tvm::runtime::Concat(call_ext_args, scalar_args);
+
+    CreatePrimFuncForExtern(global_var, buffer_creator.GetPrimFuncParams(),
+                            buffer_creator.GetBufferMap(), call_ext_args, context_buffer_var,
+                            context_buffer_size, context_buffer_bits);
+  }
+
 
   void EmitFullyConnected(const GlobalVar& global_var, const Expr& expr) {
     const CallNode* clip_call = nullptr;
@@ -876,6 +1049,8 @@ class RelayToTIRVisitor : public MixedModeMutator {
           EmitAdd(new_global_var, composite_func->body);
         } else if (comp_name == "cmsis-nn.qnn_conv2d") {
           EmitConv2D(new_global_var, composite_func->body);
+        } else if (comp_name == "cmsis-nn.conv2d") {
+          EmitConv2D_(new_global_var, composite_func->body);
         } else if (comp_name == "cmsis-nn.qnn_fully_connected") {
           EmitFullyConnected(new_global_var, composite_func->body);
         } else if (comp_name == "cmsis-nn.qnn_avg_pool2d" ||

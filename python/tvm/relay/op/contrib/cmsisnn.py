@@ -21,7 +21,7 @@ from tvm.target import Target
 from tvm.relay import transform
 from tvm.relay.build_module import bind_params_by_name
 
-from ...dataflow_pattern import is_constant, is_op, wildcard
+from ...dataflow_pattern import is_constant, is_op, wildcard, is_var
 from .register import register_pattern_table
 
 tvm._ffi._init_api("relay.ext.cmsisnn.transform", __name__)
@@ -101,6 +101,115 @@ def pattern_table():
             return True
 
         return False
+    
+    def conv2d_pattern(with_pad):
+        """Create pattern for qnn.conv2D with optional pad and/or optional fused relu."""
+        conv2d_input = wildcard()
+        if with_pad:
+            conv2d_input = is_op("nn.pad")(wildcard(), is_constant())
+        qnn_conv2d = is_op("nn.conv2d")(
+            conv2d_input,
+            is_constant() | is_var(),
+
+        )
+        bias_add = is_op("nn.bias_add")(qnn_conv2d, is_constant())
+        # req = is_op("qnn.requantize")(
+        #     qnn_conv2d | bias_add, is_constant(), is_constant(), is_constant(), is_constant()
+        # )
+        # clip_or_req = req.optional(is_op("clip"))
+        bias_add_or_conv2d = qnn_conv2d | bias_add
+        return bias_add_or_conv2d
+
+    def check_conv2d(pattern):
+        print("[CMSIS-NN] enter check_conv2d")
+        """Check if the Conv2D is supported by CMSIS-NN."""
+        bias_add = None
+        if str(pattern.op.name) == "nn.bias_add":
+            bias_add = pattern
+            conv2d = bias_add.args[0]
+        else:
+            conv2d = pattern
+        conv2d_input = conv2d.args[0]
+        conv2d_weight = conv2d.args[1]
+
+        # check if depthwise Conv2D
+        kernel_layout = conv2d.attrs.kernel_layout
+        pos_o = kernel_layout.index("O")
+        groups = conv2d.attrs.groups
+        is_depthwise = False
+        if groups == int(conv2d_input.checked_type.shape[3]) and groups == int(
+            conv2d_weight.checked_type.shape[pos_o]
+        ):
+            is_depthwise = True
+
+        # check if dtypes are supported for the following entities
+        # (input_dtype, weight_dtype, bias_dtype, out_dtype, pattern_dtype)
+        are_dtypes_valid = False
+        conv2d_input_dtype = conv2d_input.checked_type.dtype
+        if bias_add:
+            bias_dtype = bias_add.args[1].checked_type.dtype
+        else:
+            # this is only to enable to following check that validates all sorts of dtypes
+            bias_dtype = "int32" if conv2d_input_dtype == "int8" else "int64"
+        valid_dtypes = None
+        if conv2d_input_dtype == "int8":
+            # valid_dtypes = ("int8", "int8", "int32", "int32", "int8")
+            valid_dtypes = ("int8", "int8", "int32", "int8", "int8")
+        elif conv2d_input_dtype == "int16":
+            valid_dtypes = ("int16", "int8", "int64", "int64", "int16")
+
+        if (
+            conv2d_input_dtype,
+            conv2d_weight.checked_type.dtype,
+            bias_dtype,
+            conv2d.attrs.out_dtype,
+            pattern.checked_type.dtype,
+        ) == valid_dtypes:
+            are_dtypes_valid = True
+
+        # input_zero_point should be 0 when int16
+        # valid_input_zp = True
+        # if conv2d_input_dtype == "int16" and conv2d.args[2].data.numpy().item(0) != 0:
+        #     valid_input_zp = False
+
+        # kernel zero_point should be 0
+        # kernel_zp = conv2d.args[3].data.numpy()
+        # kernel_zp = [kernel_zp] if kernel_zp.ndim == 0 else kernel_zp
+
+        # combination of all checks to decide if pattern is eligible for partitioning
+        ret = (
+            are_dtypes_valid
+            # and valid_input_zp
+            # and all([zp == 0 for zp in kernel_zp])
+            and (not is_depthwise or bias_add is not None)
+        )
+        if (ret):
+            print("got CMSIS-able conv2d!")
+        return ret
+
+    def check_conv2d_pad(pattern):
+        """Check if the Pad followed by Conv2D is supported by CMSIS-NN."""
+
+        if str(pattern.op.name) == "nn.bias_add":
+            bias_add = pattern
+            conv2d = bias_add.args[0]
+        else:
+            conv2d = pattern
+        conv2d_input = conv2d.args[0]
+
+        # check if sum of paddings from pad() and conv2d() satisfies CMSIS-NN constraints
+        can_pad_be_fused = True
+        if isinstance(conv2d_input, tvm.relay.expr.Call) and str(conv2d_input.op.name) == "nn.pad":
+            pad_top, pad_left, pad_bottom, pad_right = GetEffectiveConv2DPadding(
+                conv2d, conv2d_input
+            )
+            # check if difference in the side paddings is 1 along each dimension
+            pad_w_diff = int(pad_right - pad_left)
+            pad_h_diff = int(pad_bottom - pad_top)
+            can_pad_be_fused = pad_w_diff in [0, 1] and pad_h_diff in [0, 1]
+
+        ret = check_conv2d(pattern) and can_pad_be_fused
+        return ret
 
     def qnn_conv2d_pattern(with_pad):
         """Create pattern for qnn.conv2D with optional pad and/or optional fused relu."""
@@ -189,7 +298,7 @@ def pattern_table():
             and all([zp == 0 for zp in kernel_zp])
             and (not is_depthwise or bias_add is not None)
         )
-        return ret
+        
 
     def check_qnn_conv2d_pad(pattern):
         """Check if the Pad followed by Conv2D is supported by CMSIS-NN."""
@@ -219,6 +328,8 @@ def pattern_table():
 
         ret = check_qnn_conv2d(pattern) and can_pad_be_fused
         return ret
+    
+    
 
     def qnn_fully_connected_pattern():
         """Create pattern for qnn.dense with optional Relu."""
@@ -383,6 +494,8 @@ def pattern_table():
         return True
 
     return [
+        ("cmsis-nn.conv2d", conv2d_pattern(with_pad=True), check_conv2d_pad),
+        ("cmsis-nn.conv2d", conv2d_pattern(with_pad=False), check_conv2d),
         ("cmsis-nn.qnn_conv2d", qnn_conv2d_pattern(with_pad=True), check_qnn_conv2d_pad),
         ("cmsis-nn.qnn_conv2d", qnn_conv2d_pattern(with_pad=False), check_qnn_conv2d),
         ("cmsis-nn.qnn_fully_connected", qnn_fully_connected_pattern(), check_qnn_fully_connected),

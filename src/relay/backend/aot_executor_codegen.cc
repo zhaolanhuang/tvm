@@ -95,6 +95,7 @@ class AOTOnDemandAllocator : public transform::DeviceAwareExprVisitor {
     if (call_lowered_props.lowered_func.defined()) {
       func = call_lowered_props.lowered_func;
       args = call_lowered_props.arguments;
+      VLOG(1) << "call lowered func:" << PrettyPrint(func) << ", attrs:" << PrettyPrint(call_lowered_props.attrs.metadata);
     } else {  // Relay functions that have not been lowered and lowered extern functions
       func = call_node->op;
       args = call_node->args;
@@ -243,13 +244,16 @@ class AOTOnDemandAllocator : public transform::DeviceAwareExprVisitor {
     ICHECK(!virtual_device->IsFullyUnconstrained())
         << "invalid virtual device for expr:" << std::endl
         << PrettyPrint(expr);
+    VLOG(1) << "Create Stroage for expr:" << PrettyPrint(expr);
     std::vector<int64_t> storage_ids;
     std::vector<VirtualDevice> virtual_devices;
     std::vector<int64_t> storage_sizes_in_bytes;
     for (const auto& ttype : FlattenTupleType(expr->checked_type())) {
+      VLOG(1) << "sid:" << next_available_sid_;
       storage_ids.push_back(next_available_sid_++);
       virtual_devices.push_back(virtual_device);
       storage_sizes_in_bytes.push_back(GetMemorySizeBytes(ttype));
+      
     }
     storage_device_map_[expr] = StorageInfo(std::move(storage_ids), std::move(virtual_devices),
                                             std::move(storage_sizes_in_bytes));

@@ -46,7 +46,7 @@
 # - ON: enable CUDA with cmake's auto search
 # - OFF: disable CUDA
 # - /path/to/cuda: use specific path to cuda toolkit
-set(USE_CUDA ON)
+set(USE_CUDA OFF)
 
 # Whether enable ROCM runtime
 #
@@ -142,7 +142,7 @@ set(USE_MICRO_STANDALONE_RUNTIME ON)
 # - OFF: disable llvm, note this will disable CPU codegen
 #        which is needed for most cases
 # - /path/to/llvm-config: enable specific LLVM when multiple llvm-dev is available.
-set(USE_LLVM "/usr/bin/llvm-config --link-static")
+set(USE_LLVM "/home/zhaolan/llvm-project-14.0.0/build/bin/llvm-config --ignore-libllvm --link-static")
 set(HIDE_PRIVATE_SYMBOLS ON)
 
 #---------------------------------------------
@@ -246,7 +246,7 @@ set(USE_SORT ON)
 #                       operators to Arm Compute Library. OFF/ON
 # USE_ARM_COMPUTE_LIB_GRAPH_EXECUTOR - Run Arm Compute Library annotated functions via the ACL
 #                                     runtime. OFF/ON/"path/to/ACL"
-set(USE_ARM_COMPUTE_LIB OFF)
+set(USE_ARM_COMPUTE_LIB ON)
 set(USE_ARM_COMPUTE_LIB_GRAPH_EXECUTOR OFF)
 
 # Whether to build with Arm Ethos-N support
@@ -264,7 +264,7 @@ set(USE_ETHOSU OFF)
 
 # Whether to build with CMSIS-NN external library support.
 # See https://github.com/ARM-software/CMSIS_5
-set(USE_CMSISNN OFF)
+set(USE_CMSISNN ON)
 
 # Whether to build with TensorRT codegen or runtime
 # Examples are available here: docs/deploy/tensorrt.rst.

@@ -47,6 +47,7 @@
 #include "../backend/name_transforms.h"
 #include "../backend/utils.h"
 #include "pass_utils.h"
+#include "../op/call/call.h"
 
 namespace tvm {
 namespace relay {
@@ -348,6 +349,7 @@ class Partitioner : public MixedModeMutator {
 
     // Create a call node for the function.
     auto call = Call(glob_func, param_expr);
+    
     region_func_meta_[region].func_call = call;
 
     return call;
@@ -550,8 +552,20 @@ class NameMangleExtFuncs : public MixedModeMutator {
     if (op_node == nullptr || mangled_gvars_.find(op_node->name_hint) == mangled_gvars_.end()) {
       return new_expr;
     } else {
-      return Call(mangled_gvars_[op_node->name_hint], new_call->args, new_call->attrs,
-                  new_call->type_args, new_call->span);
+      // return Call(mangled_gvars_[op_node->name_hint], new_call->args, new_call->attrs,
+      //             new_call->type_args, new_call->span);
+      // const auto* call_lowered_attrs = new_call->attrs.as<CallLoweredAttrs>();
+      return Call(Op::Get("call_cmsis"), new_call->args,
+              DictAttrs({{"type_args", new_call->type_args}, 
+                          {"ext_name", op_node->name_hint},
+                        {"global_var", mangled_gvars_[op_node->name_hint]},
+                        {"args", new_call->args},
+                        {"call_type", new_call->checked_type()}}), 
+              new_call->type_args, new_call->span);
+
+      // auto attrs = make_object<CallLoweredAttrs>(*call_lowered_attrs);
+      // return Call(CallLoweredOp(), {mangled_gvars_[op_node->name_hint], Tuple(new_call->args)},
+      //         new_call->attrs, /*type_args=*/{}, new_call->span);
     }
   }
 

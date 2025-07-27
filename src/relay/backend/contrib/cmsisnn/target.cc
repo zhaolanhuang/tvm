@@ -34,6 +34,23 @@ tvm::transform::Pass RelayToTIR();
 runtime::Module TIRToRuntime(IRModule mod, Target target);
 using FTVMTIRToRuntime = tvm::runtime::TypedPackedFunc<runtime::Module(IRModule, Target)>;
 
+runtime::Module CompileCMSISNN(const ObjectRef& ref) {
+  IRModule relay_mod;
+  Function relay_func = Downcast<Function>(ref);
+  auto func_name = relay_func->GetAttr<String>(tvm::attr::kGlobalSymbol);
+  GlobalVar var = GlobalVar(func_name.value());
+  relay_mod->Add(var, relay_func);
+  relay_mod = transform::InferType()(relay_mod);
+
+  Array<transform::Pass> pass_seqs{transform::InferType(), RelayToTIR()};
+  transform::Sequential seq(pass_seqs);
+  IRModule tir_mod = seq(relay_mod);
+
+  return TIRToRuntime(tir_mod, Target("cmsis-nn"));
+}
+
+TVM_REGISTER_GLOBAL("relay.ext.cmsis-nn").set_body_typed(CompileCMSISNN);
+
 TVM_REGISTER_TARGET_KIND("cmsis-nn", kDLCPU)
     .add_attr_option<Array<String>>("mattr")
     .add_attr_option<String>("mcpu")
